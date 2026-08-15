@@ -483,6 +483,28 @@ class MalformedHistoryTests(unittest.TestCase):
         self.assertEqual(result.issues, ())
 
     def test_conflicting_completion_evidence_is_not_last_write_wins(self):
+        duplicates = append_record(EMPTY_FACTS, "invocation_began")
+        duplicates = append_record(
+            duplicates, "effect_attempted", associations={"effect_id": "effect-x"}
+        )
+        duplicates = append_record(
+            duplicates,
+            "effect_completion_evidence_observed",
+            associations={"effect_id": "effect-x"},
+            payload={"conclusion": "completed", "evidence": "receipt-a"},
+        )
+        duplicates = append_record(
+            duplicates,
+            "effect_completion_evidence_observed",
+            associations={"effect_id": "effect-x"},
+            payload={"conclusion": "completed", "evidence": "receipt-b"},
+        )
+        duplicate_result = project(duplicates)
+        self.assertEqual(
+            duplicate_result.effects[0].completion_knowledge, "known_completed"
+        )
+        self.assertEqual(duplicate_result.issues, ())
+
         facts = append_record(EMPTY_FACTS, "invocation_began")
         facts = append_record(
             facts, "effect_attempted", associations={"effect_id": "effect-x"}
@@ -523,7 +545,10 @@ class MalformedHistoryTests(unittest.TestCase):
         after = project(complete)
 
         self.assertEqual(before.effects, ())
-        self.assertEqual(before.issues[0].code, "unsupported_effect_attempt")
+        self.assertEqual(
+            before.issues,
+            (ProjectionIssue("unsupported_effect_attempt", (2,), "effect-x"),),
+        )
         self.assertEqual(after.effects[0].completion_knowledge, "known_completed")
         self.assertEqual(after.effects[0].evidence_positions, (2,))
         self.assertEqual(after.issues, ())
@@ -560,7 +585,41 @@ class MalformedHistoryTests(unittest.TestCase):
         self.assertEqual(result.covered_prefix, 5)
         self.assertEqual(result.operations[0].outcome, "failed")
         self.assertEqual(result.manifestations[0].content, "foo")
-        self.assertEqual(result.issues[0].code, "unsupported_effect_attempt")
+        self.assertEqual(
+            result.issues,
+            (ProjectionIssue("unsupported_effect_attempt", (2,), "missing-effect"),),
+        )
+
+        multi_issue = append_record(
+            EMPTY_FACTS,
+            "observation_recorded",
+            associations={"operation_id": "missing-operation"},
+            payload={"observation_kind": "result", "value": "orphan"},
+        )
+        multi_issue = append_record(
+            multi_issue,
+            "manifestation_recorded",
+            associations={"producer_operation_id": "missing-producer"},
+            payload={"content": "orphan"},
+        )
+        multi_issue = append_record(
+            multi_issue,
+            "effect_completion_evidence_observed",
+            associations={"effect_id": "missing-effect"},
+            payload={"conclusion": "completed", "evidence": "orphan"},
+        )
+        multi_result = project(multi_issue)
+        self.assertEqual(
+            multi_result.issues,
+            (
+                ProjectionIssue("missing_invocation_begin", (1,), INVOCATION_ID),
+                ProjectionIssue("unsupported_operation", (1,), "missing-operation"),
+                ProjectionIssue(
+                    "unsupported_producer_operation", (2,), "missing-producer"
+                ),
+                ProjectionIssue("unsupported_effect_attempt", (3,), "missing-effect"),
+            ),
+        )
 
     def test_nonempty_history_without_invocation_begin_is_diagnosed_not_repaired(self):
         facts = append_record(
@@ -610,8 +669,10 @@ class MalformedHistoryTests(unittest.TestCase):
                 self.assertEqual(result.operations, ())
                 self.assertEqual(result.observations, ())
                 self.assertEqual(result.accounting, ())
-                self.assertEqual(result.issues[0].code, "unsupported_operation")
-                self.assertEqual(result.issues[0].fact_positions, (2,))
+                self.assertEqual(
+                    result.issues,
+                    (ProjectionIssue("unsupported_operation", (2,), associations["operation_id"]),),
+                )
 
     def test_authority_functions_reject_invalid_manual_sequence_before_semantics(self):
         noncontiguous = (
@@ -629,8 +690,25 @@ class MalformedHistoryTests(unittest.TestCase):
         )
 
         for invalid in (noncontiguous, mixed):
-            for consumer in (read_facts, encode_facts, project):
-                with self.subTest(invalid=invalid, consumer=consumer.__name__):
+            valid_next_fact = fact(
+                "invocation_terminated",
+                3,
+                invocation_id=INVOCATION_ID,
+                payload={"outcome": "failed"},
+            )
+            consumers = (
+                ("read_facts", read_facts),
+                ("encode_facts", encode_facts),
+                ("project", project),
+                (
+                    "append_fact",
+                    lambda invalid, valid_next_fact=valid_next_fact: append_fact(
+                        invalid, valid_next_fact
+                    ),
+                ),
+            )
+            for consumer_name, consumer in consumers:
+                with self.subTest(invalid=invalid, consumer=consumer_name):
                     with self.assertRaises(FactSequenceError):
                         consumer(invalid)
 
@@ -644,6 +722,7 @@ class MalformedHistoryTests(unittest.TestCase):
                 "conflicting_operation_kind",
                 lambda result: result.operations[0].operation_kind,
                 "conflicted",
+                ProjectionIssue("conflicting_operation_kind", (2, 3), "op"),
             ),
             (
                 (
@@ -654,6 +733,7 @@ class MalformedHistoryTests(unittest.TestCase):
                 "conflicting_operation_outcome",
                 lambda result: result.operations[0].outcome,
                 "conflicted",
+                ProjectionIssue("conflicting_operation_outcome", (3, 4), "op"),
             ),
             (
                 (
@@ -663,6 +743,9 @@ class MalformedHistoryTests(unittest.TestCase):
                 "conflicting_invocation_outcome",
                 lambda result: result.invocation_outcome,
                 "conflicted",
+                ProjectionIssue(
+                    "conflicting_invocation_outcome", (2, 3), INVOCATION_ID
+                ),
             ),
             (
                 (
@@ -672,6 +755,7 @@ class MalformedHistoryTests(unittest.TestCase):
                 "conflicting_acceptance",
                 lambda result: result.acceptance,
                 "conflicted",
+                ProjectionIssue("conflicting_acceptance", (2, 3), None),
             ),
             (
                 (
@@ -683,10 +767,11 @@ class MalformedHistoryTests(unittest.TestCase):
                 "conflicting_effect_operation",
                 lambda result: result.effects[0].operation_id,
                 None,
+                ProjectionIssue("conflicting_effect_operation", (4, 5), "effect-x"),
             ),
         )
 
-        for records, issue_code, current_value, expected_value in cases:
+        for records, issue_code, current_value, expected_value, expected_issue in cases:
             with self.subTest(issue_code=issue_code):
                 facts = append_record(EMPTY_FACTS, "invocation_began")
                 for kind, associations, payload in records:
@@ -695,7 +780,63 @@ class MalformedHistoryTests(unittest.TestCase):
                     )
                 result = project(facts)
                 self.assertEqual(current_value(result), expected_value)
-                self.assertIn(issue_code, tuple(issue.code for issue in result.issues))
+                self.assertEqual(result.issues, (expected_issue,))
+
+        identical_cases = (
+            (
+                (
+                    ("operation_began", {"operation_id": "op"}, {"operation_kind": "inference"}),
+                    ("operation_began", {"operation_id": "op"}, {"operation_kind": "inference"}),
+                ),
+                lambda result: result.operations[0].operation_kind,
+                "inference",
+            ),
+            (
+                (
+                    ("operation_began", {"operation_id": "op"}, {"operation_kind": "inference"}),
+                    ("operation_terminated", {"operation_id": "op"}, {"outcome": "completed"}),
+                    ("operation_terminated", {"operation_id": "op"}, {"outcome": "completed"}),
+                ),
+                lambda result: result.operations[0].outcome,
+                "completed",
+            ),
+            (
+                (
+                    ("invocation_terminated", None, {"outcome": "completed"}),
+                    ("invocation_terminated", None, {"outcome": "completed"}),
+                ),
+                lambda result: result.invocation_outcome,
+                "completed",
+            ),
+            (
+                (
+                    ("acceptance_decided", None, {"decision": "accepted", "basis": "a"}),
+                    ("acceptance_decided", None, {"decision": "accepted", "basis": "b"}),
+                ),
+                lambda result: result.acceptance,
+                "accepted",
+            ),
+            (
+                (
+                    ("operation_began", {"operation_id": "effect-a"}, {"operation_kind": "effect"}),
+                    ("effect_attempted", {"effect_id": "effect-x", "operation_id": "effect-a"}, None),
+                    ("effect_attempted", {"effect_id": "effect-x", "operation_id": "effect-a"}, None),
+                ),
+                lambda result: result.effects[0].operation_id,
+                "effect-a",
+            ),
+        )
+
+        for records, current_value, expected_value in identical_cases:
+            with self.subTest(records=records):
+                facts = append_record(EMPTY_FACTS, "invocation_began")
+                for kind, associations, payload in records:
+                    facts = append_record(
+                        facts, kind, associations=associations, payload=payload
+                    )
+                result = project(facts)
+                self.assertEqual(current_value(result), expected_value)
+                self.assertEqual(result.issues, ())
 
 
 class ProjectionLawTests(unittest.TestCase):
@@ -725,7 +866,17 @@ class ProjectionLawTests(unittest.TestCase):
             for size in range(len(facts) + 1):
                 with self.subTest(trace=trace_index, size=size):
                     prefix = facts[:size]
-                    snapshot = tuple(prefix)
+                    encoded_before = encode_facts(prefix)
+                    fields_before = tuple(
+                        (
+                            item.kind,
+                            item.invocation_id,
+                            item.local_position,
+                            tuple(item.associations),
+                            tuple(item.payload),
+                        )
+                        for item in prefix
+                    )
                     first = project(prefix)
                     second = project(prefix)
                     rebuilt = project(decode_facts(encode_facts(prefix)))
@@ -733,18 +884,53 @@ class ProjectionLawTests(unittest.TestCase):
                     self.assertEqual(first.covered_prefix, size)
                     self.assertEqual(first, second)
                     self.assertEqual(first, rebuilt)
-                    self.assertEqual(prefix, snapshot)
+                    self.assertEqual(encode_facts(prefix), encoded_before)
+                    self.assertEqual(
+                        tuple(
+                            (
+                                item.kind,
+                                item.invocation_id,
+                                item.local_position,
+                                tuple(item.associations),
+                                tuple(item.payload),
+                            )
+                            for item in prefix
+                        ),
+                        fields_before,
+                    )
 
     def test_projection_and_issues_are_disposable_and_never_feed_history(self):
         facts = late_knowledge_trace()
-        before = read_facts(facts)
+        encoded_before = encode_facts(facts)
+        fields_before = tuple(
+            (
+                item.kind,
+                item.invocation_id,
+                item.local_position,
+                tuple(item.associations),
+                tuple(item.payload),
+            )
+            for item in facts
+        )
         projection_1 = project(facts)
         del projection_1
         projection_2 = project(facts)
 
-        self.assertIs(read_facts(facts), before)
         self.assertEqual(projection_2, project(facts))
-        self.assertEqual(read_facts(facts), facts)
+        self.assertEqual(encode_facts(facts), encoded_before)
+        self.assertEqual(
+            tuple(
+                (
+                    item.kind,
+                    item.invocation_id,
+                    item.local_position,
+                    tuple(item.associations),
+                    tuple(item.payload),
+                )
+                for item in read_facts(facts)
+            ),
+            fields_before,
+        )
 
 
 if __name__ == "__main__":
