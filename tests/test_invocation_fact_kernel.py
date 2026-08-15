@@ -450,5 +450,302 @@ class FactEncodingTests(unittest.TestCase):
         self.assertEqual(decode_facts(encode_facts(facts)), facts)
 
 
+class MalformedHistoryTests(unittest.TestCase):
+    def test_evidence_without_attempt_reports_issue_and_synthesizes_no_effect(self):
+        facts = append_record(EMPTY_FACTS, "invocation_began")
+        facts = append_record(
+            facts,
+            "effect_completion_evidence_observed",
+            associations={"effect_id": "missing-effect"},
+            payload={"conclusion": "completed", "evidence": "orphan receipt"},
+        )
+
+        result = project(facts)
+
+        self.assertEqual(result.covered_prefix, 2)
+        self.assertEqual(result.effects, ())
+        self.assertEqual(
+            result.issues,
+            (ProjectionIssue("unsupported_effect_attempt", (2,), "missing-effect"),),
+        )
+
+    def test_unknown_is_valid_and_not_an_issue(self):
+        facts = append_record(EMPTY_FACTS, "invocation_began")
+        facts = append_record(
+            facts,
+            "effect_attempted",
+            associations={"effect_id": "effect-x"},
+        )
+
+        result = project(facts)
+
+        self.assertEqual(result.effects[0].completion_knowledge, "unknown")
+        self.assertEqual(result.issues, ())
+
+    def test_conflicting_completion_evidence_is_not_last_write_wins(self):
+        facts = append_record(EMPTY_FACTS, "invocation_began")
+        facts = append_record(
+            facts, "effect_attempted", associations={"effect_id": "effect-x"}
+        )
+        facts = append_record(
+            facts,
+            "effect_completion_evidence_observed",
+            associations={"effect_id": "effect-x"},
+            payload={"conclusion": "completed", "evidence": "receipt-a"},
+        )
+        facts = append_record(
+            facts,
+            "effect_completion_evidence_observed",
+            associations={"effect_id": "effect-x"},
+            payload={"conclusion": "not_completed", "evidence": "receipt-b"},
+        )
+
+        result = project(facts)
+
+        self.assertEqual(result.effects[0].completion_knowledge, "conflicted")
+        self.assertEqual(
+            result.issues,
+            (ProjectionIssue("conflicting_effect_completion", (3, 4), "effect-x"),),
+        )
+
+    def test_later_attempt_resolves_reference_without_order_precedence(self):
+        prefix = append_record(EMPTY_FACTS, "invocation_began")
+        prefix = append_record(
+            prefix,
+            "effect_completion_evidence_observed",
+            associations={"effect_id": "effect-x"},
+            payload={"conclusion": "completed", "evidence": "receipt"},
+        )
+        before = project(prefix)
+        complete = append_record(
+            prefix, "effect_attempted", associations={"effect_id": "effect-x"}
+        )
+        after = project(complete)
+
+        self.assertEqual(before.effects, ())
+        self.assertEqual(before.issues[0].code, "unsupported_effect_attempt")
+        self.assertEqual(after.effects[0].completion_knowledge, "known_completed")
+        self.assertEqual(after.effects[0].evidence_positions, (2,))
+        self.assertEqual(after.issues, ())
+
+    def test_semantic_issue_never_reduces_coverage_or_erases_later_valid_state(self):
+        facts = append_record(EMPTY_FACTS, "invocation_began")
+        facts = append_record(
+            facts,
+            "effect_completion_evidence_observed",
+            associations={"effect_id": "missing-effect"},
+            payload={"conclusion": "completed", "evidence": "receipt"},
+        )
+        facts = append_record(
+            facts,
+            "operation_began",
+            associations={"operation_id": "operation-a"},
+            payload={"operation_kind": "stream"},
+        )
+        facts = append_record(
+            facts,
+            "manifestation_recorded",
+            associations={"producer_operation_id": "operation-a"},
+            payload={"content": "foo"},
+        )
+        facts = append_record(
+            facts,
+            "operation_terminated",
+            associations={"operation_id": "operation-a"},
+            payload={"outcome": "failed"},
+        )
+
+        result = project(facts)
+
+        self.assertEqual(result.covered_prefix, 5)
+        self.assertEqual(result.operations[0].outcome, "failed")
+        self.assertEqual(result.manifestations[0].content, "foo")
+        self.assertEqual(result.issues[0].code, "unsupported_effect_attempt")
+
+    def test_nonempty_history_without_invocation_begin_is_diagnosed_not_repaired(self):
+        facts = append_record(
+            EMPTY_FACTS,
+            "operation_began",
+            associations={"operation_id": "operation-a"},
+            payload={"operation_kind": "inference"},
+        )
+
+        result = project(facts)
+
+        self.assertEqual(result.covered_prefix, 1)
+        self.assertEqual(result.invocation_lifecycle, "absent")
+        self.assertEqual(result.operations[0].operation_id, "operation-a")
+        self.assertEqual(
+            result.issues,
+            (ProjectionIssue("missing_invocation_begin", (1,), INVOCATION_ID),),
+        )
+
+    def test_missing_operation_relationships_are_localized(self):
+        records = (
+            (
+                "observation_recorded",
+                {"operation_id": "missing-observation-op"},
+                {"observation_kind": "result", "value": "orphan"},
+            ),
+            (
+                "accounting_observed",
+                {"operation_id": "missing-accounting-op"},
+                {"metric": "input_tokens", "amount": 1},
+            ),
+            (
+                "operation_terminated",
+                {"operation_id": "missing-termination-op"},
+                {"outcome": "failed"},
+            ),
+        )
+
+        for kind, associations, payload in records:
+            with self.subTest(kind=kind):
+                facts = append_record(EMPTY_FACTS, "invocation_began")
+                facts = append_record(
+                    facts, kind, associations=associations, payload=payload
+                )
+                result = project(facts)
+                self.assertEqual(result.covered_prefix, 2)
+                self.assertEqual(result.operations, ())
+                self.assertEqual(result.observations, ())
+                self.assertEqual(result.accounting, ())
+                self.assertEqual(result.issues[0].code, "unsupported_operation")
+                self.assertEqual(result.issues[0].fact_positions, (2,))
+
+    def test_authority_functions_reject_invalid_manual_sequence_before_semantics(self):
+        noncontiguous = (
+            fact("invocation_began", 1),
+            fact("invocation_terminated", 3, payload={"outcome": "failed"}),
+        )
+        mixed = (
+            fact("invocation_began", 1),
+            fact(
+                "invocation_terminated",
+                2,
+                invocation_id="other",
+                payload={"outcome": "failed"},
+            ),
+        )
+
+        for invalid in (noncontiguous, mixed):
+            for consumer in (read_facts, encode_facts, project):
+                with self.subTest(invalid=invalid, consumer=consumer.__name__):
+                    with self.assertRaises(FactSequenceError):
+                        consumer(invalid)
+
+    def test_other_incompatible_conclusions_project_as_conflicted(self):
+        cases = (
+            (
+                (
+                    ("operation_began", {"operation_id": "op"}, {"operation_kind": "inference"}),
+                    ("operation_began", {"operation_id": "op"}, {"operation_kind": "stream"}),
+                ),
+                "conflicting_operation_kind",
+                lambda result: result.operations[0].operation_kind,
+                "conflicted",
+            ),
+            (
+                (
+                    ("operation_began", {"operation_id": "op"}, {"operation_kind": "inference"}),
+                    ("operation_terminated", {"operation_id": "op"}, {"outcome": "completed"}),
+                    ("operation_terminated", {"operation_id": "op"}, {"outcome": "failed"}),
+                ),
+                "conflicting_operation_outcome",
+                lambda result: result.operations[0].outcome,
+                "conflicted",
+            ),
+            (
+                (
+                    ("invocation_terminated", None, {"outcome": "completed"}),
+                    ("invocation_terminated", None, {"outcome": "failed"}),
+                ),
+                "conflicting_invocation_outcome",
+                lambda result: result.invocation_outcome,
+                "conflicted",
+            ),
+            (
+                (
+                    ("acceptance_decided", None, {"decision": "accepted", "basis": "a"}),
+                    ("acceptance_decided", None, {"decision": "rejected", "basis": "b"}),
+                ),
+                "conflicting_acceptance",
+                lambda result: result.acceptance,
+                "conflicted",
+            ),
+            (
+                (
+                    ("operation_began", {"operation_id": "effect-a"}, {"operation_kind": "effect"}),
+                    ("operation_began", {"operation_id": "effect-b"}, {"operation_kind": "effect"}),
+                    ("effect_attempted", {"effect_id": "effect-x", "operation_id": "effect-a"}, None),
+                    ("effect_attempted", {"effect_id": "effect-x", "operation_id": "effect-b"}, None),
+                ),
+                "conflicting_effect_operation",
+                lambda result: result.effects[0].operation_id,
+                None,
+            ),
+        )
+
+        for records, issue_code, current_value, expected_value in cases:
+            with self.subTest(issue_code=issue_code):
+                facts = append_record(EMPTY_FACTS, "invocation_began")
+                for kind, associations, payload in records:
+                    facts = append_record(
+                        facts, kind, associations=associations, payload=payload
+                    )
+                result = project(facts)
+                self.assertEqual(current_value(result), expected_value)
+                self.assertIn(issue_code, tuple(issue.code for issue in result.issues))
+
+
+class ProjectionLawTests(unittest.TestCase):
+    def test_every_trace_prefix_is_pure_deterministic_and_round_trip_rebuildable(self):
+        readable_defect = append_record(EMPTY_FACTS, "invocation_began")
+        readable_defect = append_record(
+            readable_defect,
+            "effect_completion_evidence_observed",
+            associations={"effect_id": "missing-effect"},
+            payload={"conclusion": "completed", "evidence": "orphan receipt"},
+        )
+        readable_defect = append_record(
+            readable_defect,
+            "operation_began",
+            associations={"operation_id": "valid-operation"},
+            payload={"operation_kind": "inference"},
+        )
+        traces = (
+            ordinary_trace(),
+            streaming_trace(),
+            effect_mixed_trace(),
+            late_knowledge_trace(),
+            readable_defect,
+        )
+
+        for trace_index, facts in enumerate(traces):
+            for size in range(len(facts) + 1):
+                with self.subTest(trace=trace_index, size=size):
+                    prefix = facts[:size]
+                    snapshot = tuple(prefix)
+                    first = project(prefix)
+                    second = project(prefix)
+                    rebuilt = project(decode_facts(encode_facts(prefix)))
+
+                    self.assertEqual(first.covered_prefix, size)
+                    self.assertEqual(first, second)
+                    self.assertEqual(first, rebuilt)
+                    self.assertEqual(prefix, snapshot)
+
+    def test_projection_and_issues_are_disposable_and_never_feed_history(self):
+        facts = late_knowledge_trace()
+        before = read_facts(facts)
+        projection_1 = project(facts)
+        del projection_1
+        projection_2 = project(facts)
+
+        self.assertIs(read_facts(facts), before)
+        self.assertEqual(projection_2, project(facts))
+        self.assertEqual(read_facts(facts), facts)
+
+
 if __name__ == "__main__":
     unittest.main()
