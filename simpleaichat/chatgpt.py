@@ -49,12 +49,9 @@ class ChatGPTSession(ChatSession):
             )
 
         gen_params = params or self.params
-        data = {
-            "model": self.model,
-            "messages": self.format_input_messages(system_message, user_message),
-            "stream": stream,
-            **gen_params,
-        }
+        messages = self.format_input_messages(system_message, user_message)
+        functions = None
+        function_call = None
 
         # Add function calling parameters if a schema is provided
         if input_schema or output_schema:
@@ -68,8 +65,16 @@ class ChatGPTSession(ChatSession):
                     output_function
                 ) if output_function not in functions else None
                 if is_function_calling_required:
-                    data["function_call"] = {"name": output_schema.__name__}
-            data["functions"] = functions
+                    function_call = {"name": output_schema.__name__}
+
+        data = assemble_request(
+            model=self.model,
+            messages=messages,
+            stream=stream,
+            params=gen_params,
+            functions=functions,
+            function_call=function_call,
+        )
 
         return headers, data, user_message
 
@@ -101,13 +106,7 @@ class ChatGPTSession(ChatSession):
             prompt, system, params, False, input_schema, output_schema
         )
 
-        r = client.post(
-            str(self.api_url),
-            json=data,
-            headers=headers,
-            timeout=None,
-        )
-        r = r.json()
+        r = send_request(client, self.api_url, headers, data)
 
         try:
             if not output_schema:
@@ -258,13 +257,7 @@ class ChatGPTSession(ChatSession):
             prompt, system, params, False, input_schema, output_schema
         )
 
-        r = await client.post(
-            str(self.api_url),
-            json=data,
-            headers=headers,
-            timeout=None,
-        )
-        r = r.json()
+        r = await send_request_async(client, self.api_url, headers, data)
 
         try:
             if not output_schema:
@@ -398,3 +391,46 @@ class ChatGPTSession(ChatSession):
         self.add_messages(user_message, assistant_message, save_messages)
 
         return context_dict
+
+
+def assemble_request(
+    model: str,
+    messages: List[Dict[str, Any]],
+    stream: bool,
+    params: Dict[str, Any],
+    functions: List[Dict[str, Any]] = None,
+    function_call: Dict[str, Any] = None,
+) -> Dict[str, Any]:
+    data = {
+        "model": model,
+        "messages": messages,
+        "stream": stream,
+        **params,
+    }
+
+    if function_call is not None:
+        data["function_call"] = function_call
+    if functions is not None:
+        data["functions"] = functions
+
+    return data
+
+
+def send_request(client, api_url, headers, data):
+    response = client.post(
+        str(api_url),
+        json=data,
+        headers=headers,
+        timeout=None,
+    )
+    return response.json()
+
+
+async def send_request_async(client, api_url, headers, data):
+    response = await client.post(
+        str(api_url),
+        json=data,
+        headers=headers,
+        timeout=None,
+    )
+    return response.json()
