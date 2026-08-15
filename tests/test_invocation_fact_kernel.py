@@ -88,14 +88,6 @@ class FactSequenceTests(unittest.TestCase):
 
 
 class FactEncodingTests(unittest.TestCase):
-    def test_encoding_round_trips_lone_surrogate_strings(self):
-        facts = append_fact(
-            EMPTY_FACTS,
-            fact("invocation_began", 1, invocation_id="\ud800"),
-        )
-
-        self.assertEqual(decode_facts(encode_facts(facts)), facts)
-
     def test_encoding_is_deterministic_and_round_trips_equal_facts(self):
         facts = append_record(EMPTY_FACTS, "invocation_began")
 
@@ -111,6 +103,12 @@ class FactEncodingTests(unittest.TestCase):
             b'"kind":"invocation_began","local_position":1,"payload":{}}],'
             b'"version":1}',
         )
+
+        surrogate_facts = append_fact(
+            EMPTY_FACTS,
+            fact("invocation_began", 1, invocation_id="\ud800"),
+        )
+        self.assertEqual(decode_facts(encode_facts(surrogate_facts)), surrogate_facts)
 
     def test_decode_rejects_invalid_representation(self):
         invalid_documents = (
@@ -129,7 +127,6 @@ class FactEncodingTests(unittest.TestCase):
                 with self.assertRaises(FactDecodeError):
                     decode_facts(document)
 
-    def test_decode_normalizes_oversized_json_integer_errors(self):
         document = (
             b'{"version":1,"facts":[{"associations":{},'
             b'"invocation_id":"inv-011","kind":"invocation_began",'
