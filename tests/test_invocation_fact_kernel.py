@@ -49,6 +49,37 @@ def ordinary_trace():
     return append_record(facts, "invocation_terminated", payload={"outcome": "completed"})
 
 
+def streaming_trace():
+    facts = append_record(EMPTY_FACTS, "invocation_began")
+    facts = append_record(
+        facts,
+        "operation_began",
+        associations={"operation_id": "stream-1"},
+        payload={"operation_kind": "stream"},
+    )
+    facts = append_record(
+        facts,
+        "manifestation_recorded",
+        associations={"producer_operation_id": "stream-1"},
+        payload={"content": "foo"},
+    )
+    facts = append_record(
+        facts,
+        "manifestation_recorded",
+        associations={"producer_operation_id": "stream-1"},
+        payload={"content": "bar"},
+    )
+    facts = append_record(
+        facts,
+        "operation_terminated",
+        associations={"operation_id": "stream-1"},
+        payload={"outcome": "failed"},
+    )
+    return append_record(
+        facts, "invocation_terminated", payload={"outcome": "failed"}
+    )
+
+
 class OrdinaryProjectionTests(unittest.TestCase):
     def test_every_ordinary_prefix_preserves_independent_state(self):
         facts = ordinary_trace()
@@ -76,6 +107,84 @@ class OrdinaryProjectionTests(unittest.TestCase):
         self.assertEqual(first, second)
         with self.assertRaises(FrozenInstanceError):
             first.covered_prefix = 0
+
+
+class StreamingProjectionTests(unittest.TestCase):
+    def test_every_streaming_prefix_preserves_manifestation_before_failure(self):
+        facts = streaming_trace()
+        projections = tuple(project(facts[:size]) for size in range(len(facts) + 1))
+
+        self.assertEqual(
+            tuple(item.covered_prefix for item in projections), tuple(range(7))
+        )
+        self.assertEqual(tuple(item.content for item in projections[3].manifestations), ("foo",))
+        self.assertEqual(tuple(item.content for item in projections[4].manifestations), ("foo", "bar"))
+        self.assertEqual(projections[4].operations[0].lifecycle, "active")
+        self.assertEqual(projections[5].operations[0].outcome, "failed")
+        self.assertEqual(tuple(item.content for item in projections[5].manifestations), ("foo", "bar"))
+        self.assertEqual(projections[5].invocation_lifecycle, "active")
+        self.assertEqual(projections[6].invocation_outcome, "failed")
+        self.assertTrue(all(not item.issues for item in projections))
+
+    def test_missing_producer_is_localized_and_later_facts_still_project(self):
+        facts = append_record(EMPTY_FACTS, "invocation_began")
+        facts = append_record(
+            facts,
+            "manifestation_recorded",
+            associations={"producer_operation_id": "missing"},
+            payload={"content": "orphan"},
+        )
+        facts = append_record(
+            facts,
+            "operation_began",
+            associations={"operation_id": "valid"},
+            payload={"operation_kind": "stream"},
+        )
+        facts = append_record(
+            facts,
+            "manifestation_recorded",
+            associations={"producer_operation_id": "valid"},
+            payload={"content": "supported"},
+        )
+        facts = append_record(
+            facts,
+            "operation_terminated",
+            associations={"operation_id": "valid"},
+            payload={"outcome": "failed"},
+        )
+
+        result = project(facts)
+
+        self.assertEqual(result.covered_prefix, 5)
+        self.assertEqual(tuple(item.content for item in result.manifestations), ("supported",))
+        self.assertEqual(result.operations[0].outcome, "failed")
+        self.assertEqual(
+            result.issues,
+            (ProjectionIssue("unsupported_producer_operation", (2,), "missing"),),
+        )
+
+    def test_later_operation_can_resolve_reference_without_implied_causality(self):
+        prefix = append_record(EMPTY_FACTS, "invocation_began")
+        prefix = append_record(
+            prefix,
+            "manifestation_recorded",
+            associations={"producer_operation_id": "late-producer"},
+            payload={"content": "observed"},
+        )
+        before = project(prefix)
+        complete = append_record(
+            prefix,
+            "operation_began",
+            associations={"operation_id": "late-producer"},
+            payload={"operation_kind": "stream"},
+        )
+        after = project(complete)
+
+        self.assertEqual(before.issues[0].code, "unsupported_producer_operation")
+        self.assertEqual(before.manifestations, ())
+        self.assertEqual(tuple(item.content for item in after.manifestations), ("observed",))
+        self.assertEqual(after.issues, ())
+        self.assertEqual(after.manifestations[0].local_position, 2)
 
 
 class FactConstructionTests(unittest.TestCase):

@@ -379,6 +379,26 @@ def project(facts: FactSequence) -> Projection:
         if operation_id not in operation_ids_set:
             issues.append(ProjectionIssue("unsupported_operation", (item.local_position,), operation_id))
 
+    manifestations = []
+    for item in _values(facts, "manifestation_recorded"):
+        producer_operation_id = _association(item, "producer_operation_id")
+        if producer_operation_id not in operation_ids_set:
+            issues.append(
+                ProjectionIssue(
+                    "unsupported_producer_operation",
+                    (item.local_position,),
+                    producer_operation_id,
+                )
+            )
+        else:
+            manifestations.append(
+                ManifestationView(
+                    item.local_position,
+                    producer_operation_id,
+                    _payload(item, "content"),
+                )
+            )
+
     acceptance_value, acceptance_issues = _conclusion(_values(facts, "acceptance_decided"), "decision", "conflicting_acceptance", None)
     issues.extend(acceptance_issues)
     invocation_outcome, invocation_issues = _conclusion(_values(facts, "invocation_terminated"), "outcome", "conflicting_invocation_outcome", invocation_id)
@@ -391,7 +411,7 @@ def project(facts: FactSequence) -> Projection:
         invocation_outcome=invocation_outcome,
         operations=tuple(operations),
         observations=tuple(observations),
-        manifestations=(),
+        manifestations=tuple(manifestations),
         accounting=tuple(accounting),
         effects=(),
         acceptance=acceptance_value or "undecided",
