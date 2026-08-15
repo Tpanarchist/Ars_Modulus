@@ -430,14 +430,14 @@ def project(facts: FactSequence) -> Projection:
                 issues.append(ProjectionIssue("unsupported_operation", (item.local_position,), operation_id))
         operation_id = next(iter(attempt_operation_ids)) if len(attempt_operation_ids) == 1 else None
         if len(attempt_operation_ids) > 1:
-            positions = tuple(item.local_position for item in supported_attempts if _association(item, "operation_id") in attempt_operation_ids)
+            positions = tuple(item.local_position for item in effect_attempts)
             issues.append(ProjectionIssue("conflicting_effect_operation", positions, effect_id))
         effect_evidence = tuple(item for item in evidence if _association(item, "effect_id") == effect_id)
         # Attempt identity is an explicit effect relationship; an unsupported
         # optional operation reference does not erase the effect attempt.
         supported_evidence = effect_evidence if effect_attempts else ()
         conclusions = {_payload(item, "conclusion") for item in supported_evidence}
-        if not supported_attempts:
+        if not effect_attempts:
             completion = None
         elif not conclusions:
             completion = "unknown"

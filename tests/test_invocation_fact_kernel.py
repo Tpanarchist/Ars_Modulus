@@ -247,6 +247,44 @@ class EffectProjectionTests(unittest.TestCase):
         self.assertEqual(projections[13].effects[0].completion_knowledge, "known_completed")
         self.assertTrue(all(not item.issues for item in projections))
 
+        malformed_operation = append_record(EMPTY_FACTS, "invocation_began")
+        malformed_operation = append_record(
+            malformed_operation, "operation_began",
+            associations={"operation_id": "op-a"},
+            payload={"operation_kind": "effect"},
+        )
+        malformed_operation = append_record(
+            malformed_operation, "operation_began",
+            associations={"operation_id": "op-b"},
+            payload={"operation_kind": "effect"},
+        )
+        malformed_operation = append_record(
+            malformed_operation, "effect_attempted",
+            associations={"effect_id": "effect-y"},
+        )
+        malformed_operation = append_record(
+            malformed_operation, "effect_attempted",
+            associations={"effect_id": "effect-y", "operation_id": "missing-op"},
+        )
+        malformed_operation = append_record(
+            malformed_operation, "effect_attempted",
+            associations={"effect_id": "effect-y", "operation_id": "op-a"},
+        )
+        malformed_operation = append_record(
+            malformed_operation, "effect_attempted",
+            associations={"effect_id": "effect-y", "operation_id": "op-b"},
+        )
+        malformed_projection = project(malformed_operation)
+        malformed_effect = next(item for item in malformed_projection.effects if item.effect_id == "effect-y")
+        self.assertEqual(malformed_effect.attempt_knowledge, "observed_attempted")
+        self.assertEqual(malformed_effect.completion_knowledge, "unknown")
+        conflict = next(item for item in malformed_projection.issues if item.code == "conflicting_effect_operation")
+        self.assertEqual(conflict.fact_positions, (4, 5, 6, 7))
+        self.assertIn(
+            ProjectionIssue("unsupported_operation", (5,), "missing-op"),
+            malformed_projection.issues,
+        )
+
     def test_late_fact_refines_knowledge_without_mutating_terminated_prefix(self):
         complete = late_knowledge_trace()
         projections = tuple(project(complete[:size]) for size in range(len(complete) + 1))
@@ -266,6 +304,18 @@ class EffectProjectionTests(unittest.TestCase):
         self.assertEqual(facts_1, facts_1_snapshot)
         self.assertEqual(projection_1, projection_1_snapshot)
         self.assertEqual(facts_2[:-1], facts_1)
+
+        late_unsupported = append_record(EMPTY_FACTS, "invocation_began")
+        late_unsupported = append_record(
+            late_unsupported, "effect_attempted",
+            associations={"effect_id": "effect-z", "operation_id": "missing-op"},
+        )
+        late_unsupported_projection = project(late_unsupported)
+        self.assertEqual(late_unsupported_projection.effects[0].completion_knowledge, "unknown")
+        self.assertIn(
+            ProjectionIssue("unsupported_operation", (2,), "missing-op"),
+            late_unsupported_projection.issues,
+        )
 
 
 class FactConstructionTests(unittest.TestCase):
