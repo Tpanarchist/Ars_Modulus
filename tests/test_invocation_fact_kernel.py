@@ -88,6 +88,14 @@ class FactSequenceTests(unittest.TestCase):
 
 
 class FactEncodingTests(unittest.TestCase):
+    def test_encoding_round_trips_lone_surrogate_strings(self):
+        facts = append_fact(
+            EMPTY_FACTS,
+            fact("invocation_began", 1, invocation_id="\ud800"),
+        )
+
+        self.assertEqual(decode_facts(encode_facts(facts)), facts)
+
     def test_encoding_is_deterministic_and_round_trips_equal_facts(self):
         facts = append_record(EMPTY_FACTS, "invocation_began")
 
@@ -116,6 +124,16 @@ class FactEncodingTests(unittest.TestCase):
             with self.subTest(document=document):
                 with self.assertRaises(FactDecodeError):
                     decode_facts(document)
+
+    def test_decode_normalizes_oversized_json_integer_errors(self):
+        document = (
+            b'{"version":1,"facts":[{"associations":{},'
+            b'"invocation_id":"inv-011","kind":"invocation_began",'
+            b'"local_position":' + b"9" * 5000 + b',"payload":{}}]}'
+        )
+
+        with self.assertRaises(FactDecodeError):
+            decode_facts(document)
 
     def test_decode_rejects_noncontiguous_and_mixed_sequences(self):
         noncontiguous = (

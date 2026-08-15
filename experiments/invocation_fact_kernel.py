@@ -196,7 +196,7 @@ def encode_facts(facts: FactSequence) -> bytes:
     }
     return json.dumps(
         document,
-        ensure_ascii=False,
+        ensure_ascii=True,
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
@@ -207,7 +207,7 @@ def _decode_document(data: bytes) -> Dict[str, Any]:
         raise FactDecodeError("encoded facts must be bytes")
     try:
         document = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (UnicodeDecodeError, ValueError) as error:
         raise FactDecodeError("encoded facts are not valid UTF-8 JSON") from error
     if not isinstance(document, dict) or set(document) != {"version", "facts"}:
         raise FactDecodeError("encoded envelope must contain version and facts")
