@@ -179,6 +179,30 @@ Upstream repository:
 
 https://github.com/minimaxir/simpleaichat
 
+## Development Setup
+
+The current experimental substrate consists of the inherited SimpleAIChat code,
+DSPy, txtai, Textual, and the raw LACKING64 palette. These components are
+available for experiments, but they are not integrated into a new architecture:
+installed substrate does not mean an implemented Ars Modulus architecture.
+
+On Windows, create and verify the repository-local Python 3.13 environment with:
+
+```powershell
+py -3.13 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip setuptools wheel
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe scripts\foundation_smoke.py
+```
+
+If `py -3.13` is unavailable, use an explicitly located CPython 3.13
+executable to create `.venv`; do not silently substitute another Python version.
+
+`requirements-dev.txt` lists the direct development substrate, while
+`requirements-lock.txt` records the exact environment resolved during the
+foundation setup pass. Neither file implies a final runtime dependency or
+packaging strategy.
+
 ## License
 
 MIT

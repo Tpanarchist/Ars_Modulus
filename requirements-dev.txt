@@ -1,0 +1,4 @@
+-e .
+dspy
+txtai
+textual
