@@ -6,8 +6,11 @@ import unittest
 from experiments.invocation_fact_kernel import (
     EMPTY_FACTS,
     FactConstructionError,
+    FactDecodeError,
     FactSequenceError,
     append_fact,
+    decode_facts,
+    encode_facts,
     make_fact,
     read_facts,
 )
@@ -82,6 +85,68 @@ class FactSequenceTests(unittest.TestCase):
         invalid = (fact("invocation_began", 1), fact("invocation_terminated", 3, payload={"outcome": "failed"}))
         with self.assertRaises(FactSequenceError):
             read_facts(invalid)
+
+
+class FactEncodingTests(unittest.TestCase):
+    def test_encoding_is_deterministic_and_round_trips_equal_facts(self):
+        facts = append_record(EMPTY_FACTS, "invocation_began")
+
+        encoded_1 = encode_facts(facts)
+        encoded_2 = encode_facts(facts)
+
+        self.assertIsInstance(encoded_1, bytes)
+        self.assertEqual(encoded_1, encoded_2)
+        self.assertEqual(decode_facts(encoded_1), facts)
+        self.assertEqual(
+            encoded_1,
+            b'{"facts":[{"associations":{},"invocation_id":"inv-011",'
+            b'"kind":"invocation_began","local_position":1,"payload":{}}],'
+            b'"version":1}',
+        )
+
+    def test_decode_rejects_invalid_representation(self):
+        invalid_documents = (
+            b"not json",
+            b'{"version":2,"facts":[]}',
+            b'{"version":1,"facts":{},"extra":true}',
+            b'{"version":1,"facts":[{"kind":"unknown"}]}',
+        )
+
+        for document in invalid_documents:
+            with self.subTest(document=document):
+                with self.assertRaises(FactDecodeError):
+                    decode_facts(document)
+
+    def test_decode_rejects_noncontiguous_and_mixed_sequences(self):
+        noncontiguous = (
+            b'{"facts":['
+            b'{"associations":{},"invocation_id":"inv-011",'
+            b'"kind":"invocation_began","local_position":1,"payload":{}},'
+            b'{"associations":{},"invocation_id":"inv-011",'
+            b'"kind":"invocation_terminated","local_position":3,'
+            b'"payload":{"outcome":"failed"}}],"version":1}'
+        )
+        mixed = noncontiguous.replace(
+            b'"invocation_id":"inv-011","kind":"invocation_terminated",'
+            b'"local_position":3',
+            b'"invocation_id":"other","kind":"invocation_terminated",'
+            b'"local_position":2',
+        )
+
+        for document in (noncontiguous, mixed):
+            with self.subTest(document=document):
+                with self.assertRaises(FactDecodeError):
+                    decode_facts(document)
+
+    def test_semantic_missing_reference_decodes_successfully(self):
+        facts = append_record(
+            EMPTY_FACTS,
+            "effect_completion_evidence_observed",
+            associations={"effect_id": "missing-effect"},
+            payload={"conclusion": "completed", "evidence": "receipt"},
+        )
+
+        self.assertEqual(decode_facts(encode_facts(facts)), facts)
 
 
 if __name__ == "__main__":

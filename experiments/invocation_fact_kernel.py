@@ -1,7 +1,8 @@
 """Run 011: isolated immutable fact and projection experiment."""
 
 from dataclasses import dataclass
-from typing import Callable, Dict, Mapping, Optional, Tuple, Union
+import json
+from typing import Any, Callable, Dict, Mapping, Optional, Tuple, Union
 
 
 FactScalar = Union[str, int]
@@ -166,3 +167,76 @@ def append_fact(facts: FactSequence, fact: Fact) -> FactSequence:
 def read_facts(facts: FactSequence) -> FactSequence:
     _validate_fact_sequence(facts)
     return facts
+
+
+_ENCODING_VERSION = 1
+_FACT_DOCUMENT_KEYS = {
+    "kind",
+    "invocation_id",
+    "local_position",
+    "associations",
+    "payload",
+}
+
+
+def encode_facts(facts: FactSequence) -> bytes:
+    _validate_fact_sequence(facts)
+    document = {
+        "version": _ENCODING_VERSION,
+        "facts": [
+            {
+                "kind": fact.kind,
+                "invocation_id": fact.invocation_id,
+                "local_position": fact.local_position,
+                "associations": dict(fact.associations),
+                "payload": dict(fact.payload),
+            }
+            for fact in facts
+        ],
+    }
+    return json.dumps(
+        document,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+
+def _decode_document(data: bytes) -> Dict[str, Any]:
+    if not isinstance(data, bytes):
+        raise FactDecodeError("encoded facts must be bytes")
+    try:
+        document = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise FactDecodeError("encoded facts are not valid UTF-8 JSON") from error
+    if not isinstance(document, dict) or set(document) != {"version", "facts"}:
+        raise FactDecodeError("encoded envelope must contain version and facts")
+    if (
+        not isinstance(document["version"], int)
+        or isinstance(document["version"], bool)
+        or document["version"] != _ENCODING_VERSION
+    ):
+        raise FactDecodeError("unsupported encoded fact version")
+    if not isinstance(document["facts"], list):
+        raise FactDecodeError("encoded facts must be a list")
+    return document
+
+
+def decode_facts(data: bytes) -> FactSequence:
+    document = _decode_document(data)
+    decoded = EMPTY_FACTS
+    try:
+        for raw_fact in document["facts"]:
+            if not isinstance(raw_fact, dict) or set(raw_fact) != _FACT_DOCUMENT_KEYS:
+                raise FactDecodeError("encoded fact has invalid fields")
+            recorded = make_fact(
+                kind=raw_fact["kind"],
+                invocation_id=raw_fact["invocation_id"],
+                local_position=raw_fact["local_position"],
+                associations=raw_fact["associations"],
+                payload=raw_fact["payload"],
+            )
+            decoded = append_fact(decoded, recorded)
+    except (FactConstructionError, FactSequenceError, TypeError) as error:
+        raise FactDecodeError(str(error)) from error
+    return decoded
