@@ -214,16 +214,34 @@ explicit open question
 typed-union alternative was built, so there is no comparative evidence either
 way — **keep experimental**.
 
-What *does* have evidence behind it is the field ontology every test
-actually relies on, independent of whether it's packaged as one polymorphic
-record or eleven typed ones: a `kind` discriminant, a scope/identity field,
-a pure order field, explicit validated associations, and kind-scoped payload
-— each with a stated non-meaning
-([field table](./run-011-minimal-invocation-fact-kernel-design.md#L292-L300)).
-**Promote** that five-way separation of roles. It's what the schema
-validation, the association-vs-payload split, and the non-meaning table are
-actually testing; the record-shape question is a separate, still-open
-packaging decision.
+What has earned promotion is narrower than the five fields themselves. It is
+the set of representation *obligations* those fields happened to satisfy,
+independent of how many fields, tables, or types eventually carry them
+([field table](./run-011-minimal-invocation-fact-kernel-design.md#L292-L300)):
+
+```text
+a fact must communicate what was recorded
+
+it must be attributable to an Invocation
+
+demonstrated local order must be recoverable
+
+semantic relationships must be explicit rather than
+inferred from adjacency
+
+the recorded content needed to interpret the fact
+must be preserved
+```
+
+**Promote** those five obligations — they are what the schema validation,
+the association-vs-payload split, and the non-meaning table actually
+exercised. **Do not promote** `kind` / `invocation_id` / `local_position` /
+`associations` / `payload` as the production field decomposition. A future
+representation could satisfy the same obligations with five fields, six
+tables, a tagged union, separate relation records, or a shape nobody has
+tried yet. Run 011 supplies no evidence that its particular decomposition is
+the one that should survive; it only supplies evidence that the obligations
+are real and separable from each other.
 
 ### 7. JSON encoding — **Keep experimental**
 
@@ -242,7 +260,7 @@ Keep the encoding experimental. **Promote** the round-trip law itself
 a verification discipline to demand of whatever format is eventually chosen
 — not JSON as that format.
 
-### 8. Tuple storage — **Reject/replace**
+### 8. Tuple storage — **Reject/replace** (as an architectural commitment)
 
 `FactItems = Tuple[Tuple[str, FactScalar], ...]` — associations and payload
 are stored as sorted, unique, string-keyed tuples of pairs, enforced by
@@ -257,11 +275,13 @@ test depends on the pair-tuple encoding by itself.
 
 This exists so a `@dataclass(frozen=True)` field can be hashable using only
 the standard library — a reasonable implementation shortcut for a
-same-afternoon experiment, and nothing more. Carrying it forward as if it
-were a representation decision is precisely the "the experiment worked,
+same-afternoon experiment, and nothing more. Rejecting it does not mean the
+implementation must be torn out or that Run 012 owes it a successor; the
+encoding can stay exactly as it is in `experiments/` indefinitely. The
+verdict is narrower and only needs to say: its successful use supplies no
+evidence that this encoding deserves production status. Carrying it forward
+as if it had earned that status is precisely the "the experiment worked,
 therefore every detail is architecture" mistake this run exists to catch.
-Production is free to choose whatever immutable mapping representation its
-actual constraints demand.
 
 ### 9. The specific fact-kind vocabulary — **Keep experimental**
 
@@ -284,14 +304,49 @@ Run 011's eleven kinds against
 | 6. Accounting observations | `accounting_observed` |
 | 7. Durable recording and coverage | Addressed structurally by `covered_prefix`, not by a fact kind |
 | 8. Acceptance | `acceptance_decided` |
-| 9. Authority and policy | **Not represented.** `effect_authorized` records that authorization was *observed*, not what policy requires it. Run 011 explicitly calls this "a future policy question, not a structural projection issue" ([L499](./run-011-minimal-invocation-fact-kernel-design.md#L499)). |
+| 9. Authority and policy | **Partially exercised.** See below. |
 | 10. Retry eligibility | **Not represented at all.** Explicitly out of scope ([L209](./run-011-minimal-invocation-fact-kernel-design.md#L209)). |
 
-Seven of ten domains map cleanly to an implemented, tested kind. One is
-addressed by a different mechanism entirely. Two have zero representation
-and zero adversarial exposure. That is real, useful, partial coverage — not
-a reason to promote the vocabulary as the production ontology, and not a
-reason to distrust the seven domains it does cover either.
+Domain 9 deserves more precision than "untouched." Run 011 has an explicit
+`effect_authorized` fact carrying an authorization basis, and projection
+deliberately keeps authorization, attempt, and completion knowledge as three
+independent fields rather than collapsing them
+(`EffectView.authorization_knowledge` / `.attempt_knowledge` /
+`.completion_knowledge`, `experiments/invocation_fact_kernel.py:449-456`).
+So Run 011 proves:
+
+```text
+authorization decision  !=  effect attempt
+```
+
+and that an authorization can be recorded independently of whether an
+attempt ever follows it. That is real, evidence-backed progress on the
+domain, not zero.
+
+It does not prove anything about:
+
+```text
+authority source
+capability resolution
+delegation
+policy evaluation
+mechanical authorization enforcement
+```
+
+An unaccompanied attempt is neither blocked nor flagged — Run 011 calls that
+"a future policy question, not a structural projection issue"
+([L499](./run-011-minimal-invocation-fact-kernel-design.md#L499)). No
+mechanism decides who may authorize, what an authorization actually
+permits, or what happens when an attempt lacks one. The domain is exercised,
+not implemented.
+
+Seven of ten domains map cleanly to an implemented, tested kind. One
+(durable recording and coverage) is addressed by a different mechanism
+entirely. One (authority and policy) is partially exercised in the narrow
+sense above. One (retry eligibility) has zero representation and zero
+adversarial exposure. That is real, useful, partial coverage — not a reason
+to promote the vocabulary as the production ontology, and not a reason to
+distrust the seven domains it does cover either.
 
 ### 10. The two-pass projector — **Split, and the description overstates the implementation**
 
@@ -333,10 +388,10 @@ for an in-memory 20-fact experiment and says nothing about a production log.
 | Issue derivation | Promote (policy); taxonomy stays experimental |
 | Covered-prefix semantics | Promote, with its non-meaning attached |
 | Fact identity / association rules | Promote (rule); identifier scheme stays experimental |
-| Single `Fact` record shape | Keep experimental; field ontology promotes instead |
+| Single `Fact` record shape | Keep experimental; the 5 obligations promote, not the 5 fields |
 | JSON encoding | Keep experimental; round-trip law promotes instead |
-| Tuple storage | Reject/replace |
-| Fact-kind vocabulary | Keep experimental — 7/10 Run 009 domains covered |
+| Tuple storage | Reject/replace, as an architectural commitment only — no successor mandated |
+| Fact-kind vocabulary | Keep experimental — 7 domains covered, 1 by another mechanism, 1 partially exercised (authority/policy), 1 untouched (retry) |
 | Two-pass projector | Promote the concept; reject "two passes" and untested scaling |
 
 ## Findings not about the ten candidates
@@ -353,15 +408,39 @@ decision from the branch's completion commit — merge locally, push and open
 a PR, or leave the branch as-is — is still unresolved and is a precondition
 for any of the above promotions actually landing anywhere.
 
-**Promotion is not integration.** Every "Promote" verdict above promotes a
-*rule*, not a location. None of them authorize moving code out of
-`experiments/`, creating a production package, wiring the kernel into
-`simpleaichat`, or deleting the experiment. Run 011's own implementation plan
-says as much for itself — "[d]o not begin Run 012, promote experimental
-names, move code into a production package"
+**Promotion is not integration, and integration remains a prerequisite.**
+Every "Promote" verdict above promotes a *rule*, not a location. None of them
+authorize moving code out of `experiments/`, creating a production package,
+wiring the kernel into `simpleaichat`, or deleting the experiment. Run 011's
+own implementation plan says as much for itself — "[d]o not begin Run 012,
+promote experimental names, move code into a production package"
 ([completion boundary](./superpowers/plans/2026-08-15-minimal-invocation-fact-kernel.md#L1961)) —
-and that boundary does not move just because this review exists. Where the
-promoted rules get implemented, and under what package layout, is a
+and that boundary does not move just because this review exists. Concretely,
+the dependency runs in one direction only:
+
+```text
+Run 011 experiment exists and passes
+        |
+        v
+Run 012 determines what deserves promotion
+        |
+        v
+USER REVIEW / STOP
+        |
+        v
+merge/integration decision still required
+(run011-fact-kernel -> main)
+        |
+        v
+only then can promoted mechanics enter
+production architecture
+```
+
+A promotion verdict answers "was this idea earned by evidence," not "is this
+now in `main`." Running the review before the merge, rather than after, is
+deliberate: it means approving Run 011's merge later does not itself imply
+that every implementation choice inside it became Ars architecture. Where
+the promoted rules get implemented, and under what package layout, is a
 still-later design run.
 
 ## Questions this review surfaces for later runs
@@ -371,9 +450,12 @@ still-later design run.
   either over the other.
 - Physical append and durability mechanics — still open since Run 010.
 - An identifier scheme beyond opaque nonempty strings.
-- Fact-kind (or equivalent) coverage for Run 009 domains 9 (authority and
-  policy) and 10 (retry eligibility), plus domain 7 (durable recording)
-  beyond what `covered_prefix` already gives structurally.
+- The unbuilt half of authority and policy (domain 9): authority source,
+  capability resolution, delegation, policy evaluation, and mechanical
+  enforcement, beyond the authorization/attempt separation Run 011 already
+  proved. Fact-kind (or equivalent) coverage for retry eligibility (domain
+  10), plus domain 7 (durable recording) beyond what `covered_prefix`
+  already gives structurally.
 - A precedence rule for incompatible evidence, if one is ever wanted — Run
   011 deliberately introduced none.
 - Projector complexity and scaling behavior against a fact sequence larger
@@ -385,16 +467,29 @@ still-later design run.
 Run 011 proved the mechanism: append-oriented authority, pure conservative
 projection, disposable localized issues, and exact prefix coverage all
 survived 102/102 tests, including an independent re-run performed for this
-review. That is real evidence and five of the ten candidates promote on the
-strength of it, in whole or in the rule they embody.
+review. That is real evidence, and it sorts the ten candidates into three
+groups rather than a clean promote/reject split.
 
-The other five — the single-record packaging, JSON, tuple storage, the exact
-kind vocabulary, and the literal two-pass description — either have no
-comparative evidence, were never claimed as production decisions by Run 011
-itself, or are implementation conveniences that happened to make the
-experiment buildable in one file. None of that is a criticism of Run 011,
-which scoped itself honestly and predicted several of these verdicts in its
-own text. It is the difference this run exists to draw.
+Two promote close to whole: pure rebuildable projection outright, and
+covered-prefix semantics once its non-meaning travels with it. Five split
+cleanly into a promoted rule and an unpromoted encoding: append-oriented
+authority (logical relation vs. physical mechanism), issue derivation
+(policy vs. taxonomy), fact identity (relationship rule vs. identifier
+scheme), the `Fact` record (representation obligations vs. field
+decomposition), and the two-pass projector (inventory-before-resolve vs.
+"exactly two passes" and untested scaling). Three carry no promotable core
+of their own: JSON contributes only the round-trip law as a discipline, not
+itself as a format; tuple storage earned nothing beyond having been
+convenient; and the fact-kind vocabulary remains explicitly partial, by its
+own design artifact's admission, against the domains it was never asked to
+cover — including authority/policy, where Run 011 earned one real,
+narrow distinction (authorization recorded independently of attempt)
+without coming anywhere near a working authority system.
+
+None of that is a criticism of Run 011, which scoped itself honestly and
+predicted several of these verdicts in its own text. It is the difference
+this run exists to draw — including the harder cases, like authority/policy,
+where "some evidence" and "the domain is solved" are not the same claim.
 
 This is the design-review stopping point. Nothing here should be acted on —
 merged, split into a package, or built on further — without user review.
