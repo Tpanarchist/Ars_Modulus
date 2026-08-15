@@ -59,19 +59,19 @@ class ChatSession(BaseModel):
     def format_input_messages(
         self, system_message: ChatMessage, user_message: ChatMessage
     ) -> list:
-        recent_messages = (
-            self.messages[-self.recent_messages :]
-            if self.recent_messages
-            else self.messages
+        selected_history = select_history(
+            self.messages,
+            self.recent_messages,
         )
-        return (
-            [system_message.model_dump(include=self.input_fields, exclude_none=True)]
-            + [
-                m.model_dump(include=self.input_fields, exclude_none=True)
-                for m in recent_messages
-            ]
-            + [user_message.model_dump(include=self.input_fields, exclude_none=True)]
+
+        provider_messages = lower_messages(
+            system_message=system_message,
+            history=selected_history,
+            current_message=user_message,
+            input_fields=self.input_fields,
         )
+
+        return provider_messages
 
     def add_messages(
         self,
@@ -90,3 +90,25 @@ class ChatSession(BaseModel):
         elif self.save_messages:
             self.messages.append(user_message)
             self.messages.append(assistant_message)
+
+
+def select_history(
+    messages: List[ChatMessage], recent_messages: Optional[int]
+) -> List[ChatMessage]:
+    return messages[-recent_messages:] if recent_messages else messages
+
+
+def lower_messages(
+    system_message: ChatMessage,
+    history: List[ChatMessage],
+    current_message: ChatMessage,
+    input_fields: Set[str],
+) -> list:
+    return (
+        [system_message.model_dump(include=input_fields, exclude_none=True)]
+        + [
+            message.model_dump(include=input_fields, exclude_none=True)
+            for message in history
+        ]
+        + [current_message.model_dump(include=input_fields, exclude_none=True)]
+    )
