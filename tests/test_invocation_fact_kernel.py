@@ -80,6 +80,44 @@ def streaming_trace():
     )
 
 
+def effect_mixed_trace():
+    records = (
+        ("invocation_began", None, None),
+        ("operation_began", {"operation_id": "selection"}, {"operation_kind": "inference"}),
+        ("observation_recorded", {"operation_id": "selection"}, {"observation_kind": "result", "value": "1"}),
+        ("accounting_observed", {"operation_id": "selection"}, {"metric": "input_tokens", "amount": 3}),
+        ("operation_terminated", {"operation_id": "selection"}, {"outcome": "completed"}),
+        ("effect_authorized", {"effect_id": "effect-x"}, {"basis": "test authority"}),
+        ("operation_began", {"operation_id": "effect-op"}, {"operation_kind": "effect"}),
+        ("effect_attempted", {"effect_id": "effect-x", "operation_id": "effect-op"}, None),
+        ("effect_completion_evidence_observed", {"effect_id": "effect-x"}, {"conclusion": "completed", "evidence": "receipt-x"}),
+        ("operation_terminated", {"operation_id": "effect-op"}, {"outcome": "completed"}),
+        ("operation_began", {"operation_id": "continuation"}, {"operation_kind": "inference"}),
+        ("operation_terminated", {"operation_id": "continuation"}, {"outcome": "failed"}),
+        ("invocation_terminated", None, {"outcome": "failed"}),
+    )
+    facts = EMPTY_FACTS
+    for kind, associations, payload in records:
+        facts = append_record(facts, kind, associations=associations, payload=payload)
+    return facts
+
+
+def late_knowledge_trace():
+    records = (
+        ("invocation_began", None, None),
+        ("operation_began", {"operation_id": "effect-op"}, {"operation_kind": "effect"}),
+        ("effect_authorized", {"effect_id": "effect-x"}, {"basis": "test authority"}),
+        ("effect_attempted", {"effect_id": "effect-x", "operation_id": "effect-op"}, None),
+        ("operation_terminated", {"operation_id": "effect-op"}, {"outcome": "failed"}),
+        ("invocation_terminated", None, {"outcome": "failed"}),
+        ("effect_completion_evidence_observed", {"effect_id": "effect-x"}, {"conclusion": "completed", "evidence": "late receipt"}),
+    )
+    facts = EMPTY_FACTS
+    for kind, associations, payload in records:
+        facts = append_record(facts, kind, associations=associations, payload=payload)
+    return facts
+
+
 class OrdinaryProjectionTests(unittest.TestCase):
     def test_every_ordinary_prefix_preserves_independent_state(self):
         facts = ordinary_trace()
@@ -185,6 +223,49 @@ class StreamingProjectionTests(unittest.TestCase):
         self.assertEqual(tuple(item.content for item in after.manifestations), ("observed",))
         self.assertEqual(after.issues, ())
         self.assertEqual(after.manifestations[0].local_position, 2)
+
+
+class EffectProjectionTests(unittest.TestCase):
+    def test_every_effectful_prefix_preserves_independent_outcomes(self):
+        facts = effect_mixed_trace()
+        projections = tuple(project(facts[:size]) for size in range(len(facts) + 1))
+        self.assertEqual(tuple(item.covered_prefix for item in projections), tuple(range(14)))
+        completion_by_prefix = tuple(item.effects[0].completion_knowledge if item.effects else "absent" for item in projections)
+        self.assertEqual(completion_by_prefix, ("absent", "absent", "absent", "absent", "absent", "absent", None, None, "unknown", "known_completed", "known_completed", "known_completed", "known_completed", "known_completed"))
+        self.assertEqual(projections[5].accounting[0].amount, 3)
+        self.assertEqual(projections[6].effects[0].authorization_knowledge, "observed_authorized")
+        self.assertEqual(projections[6].effects[0].attempt_knowledge, "not_observed")
+        self.assertEqual(projections[8].effects[0].attempt_knowledge, "observed_attempted")
+        self.assertEqual(projections[8].effects[0].completion_knowledge, "unknown")
+        self.assertEqual(projections[9].effects[0].completion_knowledge, "known_completed")
+        effect_operation = next(operation for operation in projections[10].operations if operation.operation_id == "effect-op")
+        continuation = next(operation for operation in projections[12].operations if operation.operation_id == "continuation")
+        self.assertEqual(effect_operation.outcome, "completed")
+        self.assertEqual(continuation.outcome, "failed")
+        self.assertEqual(projections[12].effects[0].completion_knowledge, "known_completed")
+        self.assertEqual(projections[13].invocation_outcome, "failed")
+        self.assertEqual(projections[13].effects[0].completion_knowledge, "known_completed")
+        self.assertTrue(all(not item.issues for item in projections))
+
+    def test_late_fact_refines_knowledge_without_mutating_terminated_prefix(self):
+        complete = late_knowledge_trace()
+        projections = tuple(project(complete[:size]) for size in range(len(complete) + 1))
+        self.assertEqual(tuple(item.effects[0].completion_knowledge if item.effects else "absent" for item in projections), ("absent", "absent", "absent", None, "unknown", "unknown", "unknown", "known_completed"))
+        self.assertEqual(tuple(item.covered_prefix for item in projections), tuple(range(8)))
+        self.assertTrue(all(not item.issues for item in projections))
+        facts_1 = complete[:-1]
+        projection_1 = project(facts_1)
+        facts_1_snapshot = tuple(facts_1)
+        projection_1_snapshot = projection_1
+        facts_2 = append_fact(facts_1, complete[-1])
+        projection_2 = project(facts_2)
+        self.assertEqual(projection_1.effects[0].completion_knowledge, "unknown")
+        self.assertEqual(projection_1.invocation_outcome, "failed")
+        self.assertEqual(projection_2.effects[0].completion_knowledge, "known_completed")
+        self.assertEqual(projection_2.invocation_outcome, "failed")
+        self.assertEqual(facts_1, facts_1_snapshot)
+        self.assertEqual(projection_1, projection_1_snapshot)
+        self.assertEqual(facts_2[:-1], facts_1)
 
 
 class FactConstructionTests(unittest.TestCase):

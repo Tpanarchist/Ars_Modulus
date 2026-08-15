@@ -403,6 +403,57 @@ def project(facts: FactSequence) -> Projection:
     issues.extend(acceptance_issues)
     invocation_outcome, invocation_issues = _conclusion(_values(facts, "invocation_terminated"), "outcome", "conflicting_invocation_outcome", invocation_id)
     issues.extend(invocation_issues)
+    # Effects are projected from an independent, complete-prefix inventory.
+    # Evidence never creates an effect or an attempt by itself.
+    authorizations = _values(facts, "effect_authorized")
+    attempts = _values(facts, "effect_attempted")
+    evidence = _values(facts, "effect_completion_evidence_observed")
+    authorized_ids = {_association(item, "effect_id") for item in authorizations}
+    attempted_ids = {_association(item, "effect_id") for item in attempts}
+    effect_ids = sorted(authorized_ids | attempted_ids)
+    for effect_id in sorted({_association(item, "effect_id") for item in evidence} - attempted_ids):
+        positions = tuple(item.local_position for item in evidence if _association(item, "effect_id") == effect_id)
+        issues.append(ProjectionIssue("unsupported_effect_attempt", positions, effect_id))
+    effects = []
+    for effect_id in effect_ids:
+        effect_attempts = tuple(item for item in attempts if _association(item, "effect_id") == effect_id)
+        supported_attempts = []
+        attempt_operation_ids = set()
+        for item in effect_attempts:
+            operation_id = _association(item, "operation_id")
+            if operation_id is None:
+                supported_attempts.append(item)
+            elif operation_id in operation_ids_set:
+                supported_attempts.append(item)
+                attempt_operation_ids.add(operation_id)
+            else:
+                issues.append(ProjectionIssue("unsupported_operation", (item.local_position,), operation_id))
+        operation_id = next(iter(attempt_operation_ids)) if len(attempt_operation_ids) == 1 else None
+        if len(attempt_operation_ids) > 1:
+            positions = tuple(item.local_position for item in supported_attempts if _association(item, "operation_id") in attempt_operation_ids)
+            issues.append(ProjectionIssue("conflicting_effect_operation", positions, effect_id))
+        effect_evidence = tuple(item for item in evidence if _association(item, "effect_id") == effect_id)
+        # Attempt identity is an explicit effect relationship; an unsupported
+        # optional operation reference does not erase the effect attempt.
+        supported_evidence = effect_evidence if effect_attempts else ()
+        conclusions = {_payload(item, "conclusion") for item in supported_evidence}
+        if not supported_attempts:
+            completion = None
+        elif not conclusions:
+            completion = "unknown"
+        elif len(conclusions) == 1:
+            completion = "known_completed" if next(iter(conclusions)) == "completed" else "known_not_completed"
+        else:
+            completion = "conflicted"
+            issues.append(ProjectionIssue("conflicting_effect_completion", tuple(item.local_position for item in supported_evidence), effect_id))
+        effects.append(EffectView(
+            effect_id,
+            "observed_authorized" if effect_id in authorized_ids else "not_observed",
+            "observed_attempted" if effect_id in attempted_ids else "not_observed",
+            operation_id,
+            completion,
+            tuple(item.local_position for item in supported_evidence),
+        ))
     lifecycle = "terminated" if began and _values(facts, "invocation_terminated") else ("active" if began else "absent")
     return Projection(
         covered_prefix=len(facts),
@@ -413,7 +464,7 @@ def project(facts: FactSequence) -> Projection:
         observations=tuple(observations),
         manifestations=tuple(manifestations),
         accounting=tuple(accounting),
-        effects=(),
+        effects=tuple(effects),
         acceptance=acceptance_value or "undecided",
         issues=tuple(sorted(issues, key=_issue_sort_key)),
     )
