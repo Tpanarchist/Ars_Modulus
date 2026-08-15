@@ -21,6 +21,69 @@ class FactDecodeError(ValueError):
     """Encoded bytes cannot produce a structurally readable sequence."""
 
 
+@dataclass(frozen=True)
+class ProjectionIssue:
+    code: str
+    fact_positions: Tuple[int, ...]
+    subject_id: Optional[str]
+
+
+@dataclass(frozen=True)
+class OperationView:
+    operation_id: str
+    operation_kind: str
+    lifecycle: str
+    outcome: Optional[str]
+
+
+@dataclass(frozen=True)
+class ObservationView:
+    local_position: int
+    operation_id: str
+    observation_kind: str
+    value: str
+
+
+@dataclass(frozen=True)
+class ManifestationView:
+    local_position: int
+    producer_operation_id: str
+    content: str
+
+
+@dataclass(frozen=True)
+class AccountingView:
+    local_position: int
+    operation_id: str
+    metric: str
+    amount: int
+
+
+@dataclass(frozen=True)
+class EffectView:
+    effect_id: str
+    authorization_knowledge: str
+    attempt_knowledge: str
+    operation_id: Optional[str]
+    completion_knowledge: Optional[str]
+    evidence_positions: Tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class Projection:
+    covered_prefix: int
+    invocation_id: Optional[str]
+    invocation_lifecycle: str
+    invocation_outcome: Optional[str]
+    operations: Tuple[OperationView, ...]
+    observations: Tuple[ObservationView, ...]
+    manifestations: Tuple[ManifestationView, ...]
+    accounting: Tuple[AccountingView, ...]
+    effects: Tuple[EffectView, ...]
+    acceptance: str
+    issues: Tuple[ProjectionIssue, ...]
+
+
 def _is_string(value: FactScalar) -> bool:
     return isinstance(value, str)
 
@@ -244,3 +307,93 @@ def decode_facts(data: bytes) -> FactSequence:
     except (FactConstructionError, FactSequenceError, TypeError) as error:
         raise FactDecodeError(str(error)) from error
     return decoded
+
+
+def _values(facts: FactSequence, kind: str) -> Tuple[Fact, ...]:
+    return tuple(item for item in facts if item.kind == kind)
+
+
+def _association(fact: Fact, key: str) -> Optional[str]:
+    value = dict(fact.associations).get(key)
+    return value if isinstance(value, str) else None
+
+
+def _payload(fact: Fact, key: str) -> FactScalar:
+    return dict(fact.payload)[key]
+
+
+def _issue_sort_key(issue: ProjectionIssue):
+    first = issue.fact_positions[0] if issue.fact_positions else 0
+    return (first, issue.code, issue.subject_id or "", issue.fact_positions)
+
+
+def _conclusion(facts: Tuple[Fact, ...], payload_key: str, conflict_code: str, subject_id: Optional[str]):
+    values = {_payload(item, payload_key) for item in facts}
+    if not values:
+        return None, ()
+    if len(values) == 1:
+        return next(iter(values)), ()
+    positions = tuple(item.local_position for item in facts)
+    return "conflicted", (ProjectionIssue(conflict_code, positions, subject_id),)
+
+
+def project(facts: FactSequence) -> Projection:
+    _validate_fact_sequence(facts)
+    invocation_id = facts[0].invocation_id if facts else None
+    issues = []
+    began = _values(facts, "invocation_began")
+    if facts and not began:
+        issues.append(ProjectionIssue("missing_invocation_begin", (facts[0].local_position,), invocation_id))
+
+    operation_begins = _values(facts, "operation_began")
+    operation_ids = sorted({_association(item, "operation_id") for item in operation_begins})
+    operation_ids_set = set(operation_ids)
+    operations = []
+    for operation_id in operation_ids:
+        begins = tuple(item for item in operation_begins if _association(item, "operation_id") == operation_id)
+        kind, kind_issues = _conclusion(begins, "operation_kind", "conflicting_operation_kind", operation_id)
+        issues.extend(kind_issues)
+        terminations = tuple(item for item in _values(facts, "operation_terminated") if _association(item, "operation_id") == operation_id)
+        outcome, outcome_issues = _conclusion(terminations, "outcome", "conflicting_operation_outcome", operation_id)
+        issues.extend(outcome_issues)
+        operations.append(OperationView(operation_id, kind, "terminated" if terminations else "active", outcome))
+
+    observations = []
+    for item in _values(facts, "observation_recorded"):
+        operation_id = _association(item, "operation_id")
+        if operation_id not in operation_ids_set:
+            issues.append(ProjectionIssue("unsupported_operation", (item.local_position,), operation_id))
+        else:
+            observations.append(ObservationView(item.local_position, operation_id, _payload(item, "observation_kind"), _payload(item, "value")))
+
+    accounting = []
+    for item in _values(facts, "accounting_observed"):
+        operation_id = _association(item, "operation_id")
+        if operation_id not in operation_ids_set:
+            issues.append(ProjectionIssue("unsupported_operation", (item.local_position,), operation_id))
+        else:
+            accounting.append(AccountingView(item.local_position, operation_id, _payload(item, "metric"), _payload(item, "amount")))
+
+    for item in _values(facts, "operation_terminated"):
+        operation_id = _association(item, "operation_id")
+        if operation_id not in operation_ids_set:
+            issues.append(ProjectionIssue("unsupported_operation", (item.local_position,), operation_id))
+
+    acceptance_value, acceptance_issues = _conclusion(_values(facts, "acceptance_decided"), "decision", "conflicting_acceptance", None)
+    issues.extend(acceptance_issues)
+    invocation_outcome, invocation_issues = _conclusion(_values(facts, "invocation_terminated"), "outcome", "conflicting_invocation_outcome", invocation_id)
+    issues.extend(invocation_issues)
+    lifecycle = "terminated" if began and _values(facts, "invocation_terminated") else ("active" if began else "absent")
+    return Projection(
+        covered_prefix=len(facts),
+        invocation_id=invocation_id,
+        invocation_lifecycle=lifecycle,
+        invocation_outcome=invocation_outcome,
+        operations=tuple(operations),
+        observations=tuple(observations),
+        manifestations=(),
+        accounting=tuple(accounting),
+        effects=(),
+        acceptance=acceptance_value or "undecided",
+        issues=tuple(sorted(issues, key=_issue_sort_key)),
+    )

@@ -12,6 +12,9 @@ from experiments.invocation_fact_kernel import (
     decode_facts,
     encode_facts,
     make_fact,
+    Projection,
+    ProjectionIssue,
+    project,
     read_facts,
 )
 
@@ -34,6 +37,45 @@ def append_record(facts, kind, *, associations=None, payload=None):
         facts,
         fact(kind, len(facts) + 1, associations=associations, payload=payload),
     )
+
+
+def ordinary_trace():
+    facts = append_record(EMPTY_FACTS, "invocation_began")
+    facts = append_record(facts, "operation_began", associations={"operation_id": "inference-1"}, payload={"operation_kind": "inference"})
+    facts = append_record(facts, "observation_recorded", associations={"operation_id": "inference-1"}, payload={"observation_kind": "result", "value": "answer"})
+    facts = append_record(facts, "accounting_observed", associations={"operation_id": "inference-1"}, payload={"metric": "input_tokens", "amount": 4})
+    facts = append_record(facts, "operation_terminated", associations={"operation_id": "inference-1"}, payload={"outcome": "completed"})
+    facts = append_record(facts, "acceptance_decided", payload={"decision": "accepted", "basis": "test requirement"})
+    return append_record(facts, "invocation_terminated", payload={"outcome": "completed"})
+
+
+class OrdinaryProjectionTests(unittest.TestCase):
+    def test_every_ordinary_prefix_preserves_independent_state(self):
+        facts = ordinary_trace()
+        projections = tuple(project(facts[:size]) for size in range(len(facts) + 1))
+        self.assertEqual(tuple(item.covered_prefix for item in projections), tuple(range(8)))
+        self.assertEqual(projections[0].invocation_lifecycle, "absent")
+        self.assertEqual(projections[1].invocation_lifecycle, "active")
+        self.assertEqual(projections[2].operations[0].lifecycle, "active")
+        self.assertEqual(projections[3].observations[0].value, "answer")
+        self.assertEqual(projections[3].operations[0].lifecycle, "active")
+        self.assertEqual(projections[4].accounting[0].amount, 4)
+        self.assertEqual(projections[4].invocation_lifecycle, "active")
+        self.assertEqual(projections[5].operations[0].outcome, "completed")
+        self.assertEqual(projections[5].acceptance, "undecided")
+        self.assertEqual(projections[6].acceptance, "accepted")
+        self.assertEqual(projections[6].invocation_lifecycle, "active")
+        self.assertEqual(projections[7].invocation_lifecycle, "terminated")
+        self.assertEqual(projections[7].invocation_outcome, "completed")
+        self.assertTrue(all(not item.issues for item in projections))
+
+    def test_projection_is_frozen_and_deterministic(self):
+        facts = ordinary_trace()
+        first = project(facts)
+        second = project(facts)
+        self.assertEqual(first, second)
+        with self.assertRaises(FrozenInstanceError):
+            first.covered_prefix = 0
 
 
 class FactConstructionTests(unittest.TestCase):
