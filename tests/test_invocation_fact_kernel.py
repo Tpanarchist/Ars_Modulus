@@ -118,6 +118,10 @@ class FactEncodingTests(unittest.TestCase):
             b'{"version":2,"facts":[]}',
             b'{"version":1,"facts":{},"extra":true}',
             b'{"version":1,"facts":[{"kind":"unknown"}]}',
+            b'{"version":1,"facts":[{"associations":null,"invocation_id":"inv-011",'
+            b'"kind":"invocation_began","local_position":1,"payload":{}}]}',
+            b'{"version":1,"facts":[{"associations":{},"invocation_id":"inv-011",'
+            b'"kind":"invocation_began","local_position":1,"payload":null}]}',
         )
 
         for document in invalid_documents:

@@ -229,6 +229,10 @@ def decode_facts(data: bytes) -> FactSequence:
         for raw_fact in document["facts"]:
             if not isinstance(raw_fact, dict) or set(raw_fact) != _FACT_DOCUMENT_KEYS:
                 raise FactDecodeError("encoded fact has invalid fields")
+            if not isinstance(raw_fact["associations"], dict) or not isinstance(
+                raw_fact["payload"], dict
+            ):
+                raise FactDecodeError("encoded fact mappings must be JSON objects")
             recorded = make_fact(
                 kind=raw_fact["kind"],
                 invocation_id=raw_fact["invocation_id"],
